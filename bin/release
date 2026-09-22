@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+# bin/release <build-dir>
+
+BUILD_DIR="${1:?BUILD_DIR required}"
+BUILDPACK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# Run release metadata generator in python
+python3 -c "
+import sys
+import os
+
+sys.path.insert(0, '$BUILDPACK_DIR')
+
+from lib.dockerfile_parser import parse_dockerfile
+from lib.process import determine_process_cmd, determine_process_type
+
+build_dir = '$BUILD_DIR'
+dockerfile_path = os.path.join(build_dir, 'Dockerfile')
+if not os.path.exists(dockerfile_path):
+    dockerfile_path = os.path.join(build_dir, 'dockerfile')
+
+if not os.path.exists(dockerfile_path):
+    for f in os.listdir(build_dir):
+        if f.lower().startswith('dockerfile.'):
+            dockerfile_path = os.path.join(build_dir, f)
+            break
+
+cmd_str = 'python main.py'
+proc_type = 'worker'
+
+if os.path.exists(dockerfile_path):
+    try:
+        config = parse_dockerfile(dockerfile_path)
+        cmd_str = determine_process_cmd(config)
+        proc_type = determine_process_type(config, cmd_str, build_dir=build_dir)
+    except Exception:
+        pass
+
+# Output release YAML metadata
+print('---')
+print('default_process_types:')
+print(f'  {proc_type}: {cmd_str}')
+"

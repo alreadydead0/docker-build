@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# bin/detect <build-dir>
+
+BUILD_DIR="${1:-.}"
+
+# Look for Dockerfile, dockerfile, or Dockerfile.* in the build directory
+DOCKERFILE=""
+
+if [ -f "$BUILD_DIR/Dockerfile" ]; then
+    DOCKERFILE="$BUILD_DIR/Dockerfile"
+elif [ -f "$BUILD_DIR/dockerfile" ]; then
+    DOCKERFILE="$BUILD_DIR/dockerfile"
+else
+    # Find any Dockerfile.* match (e.g. Dockerfile.heroku, Dockerfile.prod)
+    MATCH=$(find "$BUILD_DIR" -maxdepth 1 -type f \( -name "Dockerfile.*" -o -name "dockerfile.*" \) | head -n 1)
+    if [ -n "$MATCH" ]; then
+        DOCKERFILE="$MATCH"
+    fi
+fi
+
+if [ -n "$DOCKERFILE" ] && [ -f "$DOCKERFILE" ]; then
+    echo "Dockerfile Heroku Compatibility Buildpack"
+    exit 0
+else
+    echo "no supported Dockerfile found" >&2
+    exit 1
+fi

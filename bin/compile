@@ -1,0 +1,141 @@
+#!/usr/bin/env bash
+set -e
+
+BUILD_DIR="${1:?BUILD_DIR required}"
+CACHE_DIR="${2:-/tmp/cache}"
+ENV_DIR="${3:-}"
+
+# Ensure python3 is available for compilation runner
+if ! command -v python3 >/dev/null 2>&1; then
+    echo "ERROR: python3 required in build environment to execute buildpack compilation." >&2
+    exit 1
+fi
+
+BUILDPACK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# Run compile orchestrator in python
+python3 -c "
+import sys
+import os
+
+sys.path.insert(0, '$BUILDPACK_DIR')
+
+from lib.dockerfile_parser import parse_dockerfile, DockerfileParseError
+from lib.python_runtime import setup_python_runtime
+from lib.packages import install_apt_packages
+from lib.process import generate_procfile_and_env
+import subprocess
+
+build_dir = '$BUILD_DIR'
+cache_dir = '$CACHE_DIR'
+env_dir = '$ENV_DIR'
+
+# Read env vars from env_dir if provided
+env_vars = {}
+if env_dir and os.path.exists(env_dir):
+    for f in os.listdir(env_dir):
+        fp = os.path.join(env_dir, f)
+        if os.path.isfile(fp):
+            try:
+                with open(fp, 'r') as ev_file:
+                    env_vars[f] = ev_file.read().strip()
+            except Exception:
+                pass
+
+print('-----> Dockerfile Heroku Compatibility Buildpack starting...')
+
+# Locate Dockerfile
+dockerfile_path = os.path.join(build_dir, 'Dockerfile')
+if not os.path.exists(dockerfile_path):
+    dockerfile_path = os.path.join(build_dir, 'dockerfile')
+
+if not os.path.exists(dockerfile_path):
+    # Find Dockerfile.*
+    for f in os.listdir(build_dir):
+        if f.lower().startswith('dockerfile.'):
+            dockerfile_path = os.path.join(build_dir, f)
+            break
+
+if not os.path.exists(dockerfile_path):
+    print('ERROR: No Dockerfile found in app root.', file=sys.stderr)
+    sys.exit(1)
+
+# 1. Parse Dockerfile
+try:
+    config = parse_dockerfile(dockerfile_path)
+except DockerfileParseError as e:
+    print(str(e), file=sys.stderr)
+    sys.exit(1)
+except Exception as e:
+    print(f'ERROR parsing Dockerfile: {e}', file=sys.stderr)
+    sys.exit(1)
+
+print(f'-----> Dockerfile base image: {config.base_image} (Python {config.python_version})')
+
+# 2. Setup Python runtime
+print(f'-----> Setting up Python {config.python_version} environment...')
+venv_python = setup_python_runtime(config.python_version, build_dir, cache_dir)
+venv_pip = os.path.join(os.path.dirname(venv_python), 'pip')
+
+# 3. Install system APT packages if requested
+if config.apt_packages:
+    install_apt_packages(config.apt_packages, build_dir, cache_dir)
+
+# 4. Install Python dependencies
+pip_cache = os.path.join(cache_dir, 'pip-cache')
+os.makedirs(pip_cache, exist_ok=True)
+
+# Look for requirements.txt or specified requirements files
+req_files = config.pip_requirements_files or []
+if not req_files:
+    if os.path.exists(os.path.join(build_dir, 'requirements.txt')):
+        req_files.append('requirements.txt')
+    else:
+        # Check requirements/*.txt
+        req_dir = os.path.join(build_dir, 'requirements')
+        if os.path.exists(req_dir) and os.path.isdir(req_dir):
+            for rf in os.listdir(req_dir):
+                if rf.endswith('.txt'):
+                    req_files.append(os.path.join('requirements', rf))
+
+for req_file in req_files:
+    full_req_path = os.path.join(build_dir, req_file)
+    if os.path.exists(full_req_path):
+        print(f'-----> Installing Python dependencies from {req_file}...')
+        res = subprocess.run([
+            venv_pip, 'install', '--cache-dir', pip_cache, '-r', full_req_path
+        ], check=False)
+        if res.returncode != 0:
+            print(f'ERROR: Failed to install requirements from {req_file}', file=sys.stderr)
+            sys.exit(1)
+
+if os.path.exists(os.path.join(build_dir, 'pyproject.toml')) or os.path.exists(os.path.join(build_dir, 'setup.py')):
+    print('-----> Installing project via pip install . ...')
+    subprocess.run([venv_pip, 'install', '--cache-dir', pip_cache, '.'], cwd=build_dir, check=False)
+
+if os.path.exists(os.path.join(build_dir, 'Pipfile')):
+    print('-----> Pipfile detected; installing dependencies...')
+    subprocess.run([venv_pip, 'install', 'pipenv'], check=False)
+    subprocess.run([venv_python, '-m', 'pipenv', 'install', '--system'], cwd=build_dir, check=False)
+
+# Inline pip installs from RUN instructions
+for inline_cmd in config.pip_inline_installs:
+    print(f'-----> Executing pip instruction: {inline_cmd}')
+    # Extract package args from pip install ...
+    pip_args = inline_cmd.split('pip install', 1)[1].strip()
+    cmd = [venv_pip, 'install', '--cache-dir', pip_cache] + pip_args.split()
+    subprocess.run(cmd, check=False)
+
+# 5. Handle chmod commands
+for chmod_cmd in config.chmod_commands:
+    print(f'-----> Running chmod command: {chmod_cmd}')
+    try:
+        subprocess.run(chmod_cmd, shell=True, cwd=build_dir, check=False)
+    except Exception as e:
+        print(f'       Notice: chmod command returned non-zero ({e})')
+
+# 6. Generate Procfile and runtime ENV scripts
+proc_line = generate_procfile_and_env(config, build_dir, env_vars)
+
+print('-----> Dockerfile Heroku Compatibility Buildpack build complete!')
+"
