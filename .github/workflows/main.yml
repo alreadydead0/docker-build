@@ -169,7 +169,7 @@ jobs:
 
           git commit \
             --author="github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com>" \
-            -m "NEXUS-ML"
+            -m "commit"
 
           echo "Commit created successfully."
 
