@@ -70,6 +70,20 @@ class TestDockerfileParser(unittest.TestCase):
         finally:
             os.remove(path)
 
+    def test_custom_python_base_image(self):
+        content = """
+        FROM mysterydemon/pypen:latest
+        WORKDIR /app
+        CMD ["python", "main.py"]
+        """
+        path = self.create_temp_dockerfile(content)
+        try:
+            config = parse_dockerfile(path)
+            self.assertEqual(config.base_image, "mysterydemon/pypen:latest")
+            self.assertEqual(config.python_version, "3.12")
+        finally:
+            os.remove(path)
+
     def test_env_and_arg_handling(self):
         content = """
         ARG PYTHON_VER=3.10

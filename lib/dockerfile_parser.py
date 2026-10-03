@@ -121,9 +121,15 @@ def parse_dockerfile(file_path: str, build_args: Optional[Dict[str, str]] = None
             base_image = from_parts[0]
             config.base_image = base_image
 
-            python_match = re.match(r'^python:(3\.\d+)(?:\.\d+)?(-.*)?$', base_image, re.IGNORECASE)
-            if python_match:
-                config.python_version = python_match.group(1)
+            lower_image = base_image.lower()
+            is_python_image = any(k in lower_image for k in ["python", "pypen", "pypy"]) or re.search(r'\bpy\b', lower_image)
+
+            if is_python_image:
+                version_match = re.search(r'(3\.\d+)', base_image)
+                if version_match:
+                    config.python_version = version_match.group(1)
+                else:
+                    config.python_version = "3.12"
             else:
                 raise DockerfileParseError(
                     f"ERROR: Dockerfile detected but unsupported base image: FROM {base_image}\n"
